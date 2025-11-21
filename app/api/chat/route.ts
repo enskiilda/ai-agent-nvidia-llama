@@ -46,125 +46,81 @@ export const maxDuration = 3600;
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-// Parser do wykrywania wywołań funkcji w tekście
-function parseTextToolCall(text: string): any | null {
-  // Wzorce do wykrywania
-  const patterns = [
-    // computer_use("screenshot")
-    /computer_use\s*\(\s*["']screenshot["']\s*\)/i,
-    // computer_use("left_click", 100, 200) lub computer_use("left_click", [100, 200])
-    /computer_use\s*\(\s*["']left_click["']\s*,\s*\[?\s*(\d+)\s*,\s*(\d+)\s*\]?\s*\)/i,
-    // computer_use("double_click", ...)
-    /computer_use\s*\(\s*["']double_click["']\s*,\s*\[?\s*(\d+)\s*,\s*(\d+)\s*\]?\s*\)/i,
-    // computer_use("right_click", ...)
-    /computer_use\s*\(\s*["']right_click["']\s*,\s*\[?\s*(\d+)\s*,\s*(\d+)\s*\]?\s*\)/i,
-    // computer_use("mouse_move", ...)
-    /computer_use\s*\(\s*["']mouse_move["']\s*,\s*\[?\s*(\d+)\s*,\s*(\d+)\s*\]?\s*\)/i,
-    // computer_use("type", "text")
-    /computer_use\s*\(\s*["']type["']\s*,\s*["']([^"']+)["']\s*\)/i,
-    // computer_use("key", "enter")
-    /computer_use\s*\(\s*["']key["']\s*,\s*["']([^"']+)["']\s*\)/i,
-    // computer_use("wait")
-    /computer_use\s*\(\s*["']wait["']\s*\)/i,
-  ];
+const finishKeywords = ['TASK_COMPLETE', 'FINISHED', 'DONE_WITH_TASK', 'ZAKOŃCZONO'];
 
-  // Sprawdź screenshot
-  if (patterns[0].test(text)) {
-    return {
-      id: `call_text_${Date.now()}`,
-      name: "computer_use",
-      arguments: JSON.stringify({ action: "screenshot" }),
-    };
+function extractNonJsonSegments(text: string, state: { inJsonBlock: boolean }) {
+  const segments: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    const fenceIndex = remaining.indexOf("```");
+
+    if (fenceIndex === -1) {
+      if (!state.inJsonBlock && remaining) {
+        segments.push(remaining);
+      }
+      break;
+    }
+
+    const beforeFence = remaining.slice(0, fenceIndex);
+    if (!state.inJsonBlock && beforeFence) {
+      segments.push(beforeFence);
+    }
+
+    state.inJsonBlock = !state.inJsonBlock;
+    remaining = remaining.slice(fenceIndex + 3);
   }
 
-  // Sprawdź left_click
-  const leftClickMatch = text.match(patterns[1]);
-  if (leftClickMatch) {
-    return {
-      id: `call_text_${Date.now()}`,
-      name: "computer_use",
-      arguments: JSON.stringify({
-        action: "left_click",
-        coordinate: [parseInt(leftClickMatch[1]), parseInt(leftClickMatch[2])],
-      }),
-    };
+  return segments;
+}
+
+function parseToolCallsFromJson(fullText: string) {
+  const toolCalls: any[] = [];
+  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
+  let match;
+
+  while ((match = jsonBlockRegex.exec(fullText)) !== null) {
+    try {
+      const parsedJson = JSON.parse(match[1]);
+      if (parsedJson.tools && Array.isArray(parsedJson.tools)) {
+        for (const tool of parsedJson.tools) {
+          if (tool.name && tool.arguments) {
+            toolCalls.push({
+              id: `call_custom_${Date.now()}_${toolCalls.length}`,
+              name: tool.name,
+              arguments: JSON.stringify(tool.arguments),
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[JSON PARSE ERROR]', error, 'Match:', match[1]);
+    }
   }
 
-  // Sprawdź double_click
-  const doubleClickMatch = text.match(patterns[2]);
-  if (doubleClickMatch) {
-    return {
-      id: `call_text_${Date.now()}`,
-      name: "computer_use",
-      arguments: JSON.stringify({
-        action: "double_click",
-        coordinate: [parseInt(doubleClickMatch[1]), parseInt(doubleClickMatch[2])],
-      }),
-    };
+  if (toolCalls.length === 0) {
+    const trimmed = fullText.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsedJson = JSON.parse(trimmed);
+        if (parsedJson.tools && Array.isArray(parsedJson.tools)) {
+          for (const tool of parsedJson.tools) {
+            if (tool.name && tool.arguments) {
+              toolCalls.push({
+                id: `call_custom_${Date.now()}_${toolCalls.length}`,
+                name: tool.name,
+                arguments: JSON.stringify(tool.arguments),
+              });
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[RAW JSON PARSE ERROR]', error);
+      }
+    }
   }
 
-  // Sprawdź right_click
-  const rightClickMatch = text.match(patterns[3]);
-  if (rightClickMatch) {
-    return {
-      id: `call_text_${Date.now()}`,
-      name: "computer_use",
-      arguments: JSON.stringify({
-        action: "right_click",
-        coordinate: [parseInt(rightClickMatch[1]), parseInt(rightClickMatch[2])],
-      }),
-    };
-  }
-
-  // Sprawdź mouse_move
-  const mouseMoveMatch = text.match(patterns[4]);
-  if (mouseMoveMatch) {
-    return {
-      id: `call_text_${Date.now()}`,
-      name: "computer_use",
-      arguments: JSON.stringify({
-        action: "mouse_move",
-        coordinate: [parseInt(mouseMoveMatch[1]), parseInt(mouseMoveMatch[2])],
-      }),
-    };
-  }
-
-  // Sprawdź type
-  const typeMatch = text.match(patterns[5]);
-  if (typeMatch) {
-    return {
-      id: `call_text_${Date.now()}`,
-      name: "computer_use",
-      arguments: JSON.stringify({
-        action: "type",
-        text: typeMatch[1],
-      }),
-    };
-  }
-
-  // Sprawdź key
-  const keyMatch = text.match(patterns[6]);
-  if (keyMatch) {
-    return {
-      id: `call_text_${Date.now()}`,
-      name: "computer_use",
-      arguments: JSON.stringify({
-        action: "key",
-        text: keyMatch[1],
-      }),
-    };
-  }
-
-  // Sprawdź wait
-  if (patterns[7].test(text)) {
-    return {
-      id: `call_text_${Date.now()}`,
-      name: "computer_use",
-      arguments: JSON.stringify({ action: "wait", duration: 1 }),
-    };
-  }
-
-  return null;
+  return toolCalls;
 }
 
 const INSTRUCTIONS = `Nazywasz się Mistral i jesteś Operatorem zaawansowanym asystentem AI który może bezpośrednio kontrolować przeglądarkę chromium aby wykonywać zadania użytkownika.
@@ -453,135 +409,80 @@ export async function POST(request: Request) {
           messageCounter++;
           console.log(`\n[ITERATION ${messageCounter}] Starting new AI message...`);
 
-          // NIE używamy tools - AI zwraca JSON w tekście!
-          const stream = await nvidia.chat.completions.create({
+          const completion = await nvidia.chat.completions.create({
             model: NVIDIA_MODEL,
             messages: chatHistory,
             temperature: 0.7,
             top_p: 0.95,
-            stream: false, // Zmiana na non-streaming dla pełnych wiadomości
+            stream: true,
           });
 
           let fullText = "";
           let toolCalls: any[] = [];
+          const streamState = { inJsonBlock: false };
 
-          // Pobierz pełną odpowiedź (non-streaming)
-          const response = stream as any;
-          if (response.choices && response.choices.length > 0) {
-            const choice = response.choices[0];
-            fullText = choice.message?.content || "";
-            console.log(`[AI RESPONSE] ${fullText.substring(0, 200)}...`);
+          for await (const chunk of completion as any) {
+            const deltaText = chunk?.choices?.[0]?.delta?.content ?? "";
+            if (!deltaText) continue;
+
+            fullText += deltaText;
+            const segments = extractNonJsonSegments(deltaText, streamState);
+            for (const segment of segments) {
+              if (!segment) continue;
+              sendEvent({ type: "text-delta", delta: segment });
+            }
           }
-          
-          // 🔥 CUSTOM JSON PARSING - parsujemy JSON z tekstu!
+
           console.log("[FULL TEXT FROM AI]", fullText);
-          
-          // Wyciągamy bloki JSON z markdown code blocks ```json ... ```
-          const jsonBlockRegex = /```json\s*(\{[\s\S]*?\})\s*```/g;
-          let match;
-          while ((match = jsonBlockRegex.exec(fullText)) !== null) {
-            try {
-              const parsedJson = JSON.parse(match[1]);
-              console.log("[PARSED JSON]", parsedJson);
-              
-              // Sprawdź czy ma tools array
-              if (parsedJson.tools && Array.isArray(parsedJson.tools)) {
-                for (const tool of parsedJson.tools) {
-                  if (tool.name && tool.arguments) {
-                    toolCalls.push({
-                      id: `call_custom_${Date.now()}_${toolCalls.length}`,
-                      name: tool.name,
-                      arguments: JSON.stringify(tool.arguments),
-                    });
-                  }
-                }
-              }
-            } catch (e) {
-              console.error('[JSON PARSE ERROR]', e, 'Match:', match[1]);
-            }
-          }
-          
-          // Próba parsowania bez markdown bloków (raw JSON)
-          if (toolCalls.length === 0) {
-            const rawJsonRegex = /\{[\s\S]*?"tools"[\s\S]*?\}(?:\})?/g;
-            let rawMatch;
-            while ((rawMatch = rawJsonRegex.exec(fullText)) !== null) {
-              try {
-                const rawText = rawMatch[0];
-                // Napraw bracket balancing
-                let openBraces = (rawText.match(/\{/g) || []).length;
-                let closeBraces = (rawText.match(/\}/g) || []).length;
-                let fixedText = rawText;
-                
-                if (openBraces > closeBraces) {
-                  fixedText += '}'.repeat(openBraces - closeBraces);
-                }
-                
-                const parsedJson = JSON.parse(fixedText);
-                console.log("[PARSED RAW JSON]", parsedJson);
-                
-                if (parsedJson.tools && Array.isArray(parsedJson.tools)) {
-                  for (const tool of parsedJson.tools) {
-                    if (tool.name && tool.arguments) {
-                      toolCalls.push({
-                        id: `call_custom_${Date.now()}_${toolCalls.length}`,
-                        name: tool.name,
-                        arguments: JSON.stringify(tool.arguments),
-                      });
-                    }
-                  }
-                }
-              } catch (e) {
-                console.error('[RAW JSON PARSE ERROR]', e);
-              }
-            }
-          }
-          
+
+          toolCalls = parseToolCallsFromJson(fullText);
           console.log("[FINAL TOOL CALLS FROM CUSTOM PARSER]", JSON.stringify(toolCalls));
-          console.log("[FULL TEXT]", fullText);
 
-          // FALLBACK: Parse text for tool calls if model didn't use native function calling
-          if (toolCalls.length === 0 && fullText) {
-            const textToolCall = parseTextToolCall(fullText);
-            if (textToolCall) {
-              console.log("[PARSED TEXT TOOL CALL]", JSON.stringify(textToolCall));
-              toolCalls = [textToolCall];
-            }
-          }
-
-          // 🔥 ROZDZIELENIE: text>tool>text>tool (osobne wiadomości!)
-          // Usuń JSON bloki z tekstu jeśli są tool calls
-          let cleanText = fullText;
-          if (toolCalls.length > 0 && fullText) {
-            // Usuń wszystkie bloki ```json...```
-            cleanText = fullText.replace(/```json[\s\S]*?```/g, '').trim();
-            // Usuń również raw JSON objects
-            cleanText = cleanText.replace(/\{[\s\S]*?"tools"[\s\S]*?\}/g, '').trim();
-          }
-
-          // 🔥 STREAMING TEKSTU NA ŻYWO - znak po znaku
-          if (cleanText && cleanText.trim()) {
-            // Stream tekst character by character dla live efektu
-            for (let i = 0; i < cleanText.length; i++) {
-              sendEvent({
-                type: "text-delta",
-                delta: cleanText[i],
-              });
-            }
-            // currentTextId zostanie zresetowany automatycznie gdy wyślemy tool-input-available
-            // lub przy następnej iteracji pętli
-          }
-
-          // Jeśli są tool calls - wyślij OSOBNO jako tool message
-          if (toolCalls.length > 0) {
-            // Tool calls zawsze są osobną wiadomością, nigdy nie grupujemy z tekstem
-            // Nie wysyłamy assistant-message, tylko eventy tool-input-available
-            // które są obsługiwane poniżej w wykonywaniu akcji
-          }
-
-          // Sprawdź czy AI chce zakończyć pętlę
-          const finishKeywords = ['TASK_COMPLETE', 'FINISHED', 'DONE_WITH_TASK', 'ZAKOŃCZONO'];
+          let cleanText = fullText.replace(/```json[\s\S]*?```/g, '').replace(/\{[\s\S]*?"tools"[\s\S]*?\}/g, '').trim();
           const wantsToFinish = fullText && finishKeywords.some(keyword => fullText.toUpperCase().includes(keyword));
+
+          if (toolCalls.length > 0 && cleanText) {
+            console.warn("[MIXED CONTENT] AI combined text and actions - rejecting tool execution");
+            const timestamp = Date.now();
+            sendEvent({
+              type: "text-message",
+              content: "Odrzucono odpowiedź: akcje muszą być w czystym JSON bez dodatkowego tekstu.",
+              timestamp,
+            });
+            chatHistory.push({
+              role: "system",
+              content:
+                "Nie łącz narracji z akcjami. Wiadomości tekstowe muszą być bez JSON, a akcje wysyłaj w osobnych wiadomościach zawierających tylko blok JSON tools.",
+            });
+            continue;
+          }
+
+          if (cleanText) {
+            chatHistory.push({
+              role: "assistant",
+              content: cleanText,
+            });
+
+            sendEvent({
+              type: "text-message",
+              content: cleanText,
+              timestamp: Date.now(),
+            });
+          }
+
+          if (wantsToFinish && toolCalls.length === 0) {
+            console.log("[AI DECIDED TO FINISH - Found finish keyword]");
+            sendEvent({
+              type: "task-complete",
+              message: "AI has completed the task",
+            });
+            break;
+          }
+
+          if (toolCalls.length === 0) {
+            console.log("[NO TOOL CALLS] AI returned only narration, continuing loop");
+            continue;
+          }
 
           if (toolCalls.length > 0) {
             // JEDNA akcja na wiadomość
@@ -940,6 +841,23 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
       "X-Accel-Buffering": "no",
       "Transfer-Encoding": "chunked",
       "Connection": "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+    },
+  });
+}
+
+export function OPTIONS() {
+  return new Response(null, {
+    status: 200,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      Pragma: "no-cache",
+      Expires: "0",
     },
   });
 }
